@@ -91,6 +91,18 @@ func (p *Plant) OperationalAudit() map[string]any {
 	columnStable := column.Stabilize(columnClone, current, snapshot.Column.Pressure, snapshot.Column.Level)
 	columnHeatPermit := column.PermitHeat(columnClone, current)
 	columnRecoveryReady := column.ColumnReady(columnClone.Snapshot())
+	columnEnvelope := p.ColumnEnvelope.Status()
+	columnEnvelopeHistory := p.ColumnEnvelope.History()
+	columnHeatAllowed := p.ColumnEnvelope.ActionAllowed("heat-up")
+	columnRelieveAllowed := p.ColumnEnvelope.ActionAllowed("relieve")
+	// 用连续历史在一个全新监控器上重放，得到独立的包络结论，便于审计比对在线状态机。
+	columnEnvelopeReplay := column.NewMonitor(column.MonitorConfig{WindowNeeded: 5, HistoryCap: 32})
+	for _, sample := range columnEnvelopeHistory {
+		sampleCampaign := current
+		sampleCampaign.Phase = sample.Phase
+		_ = columnEnvelopeReplay.Observe(sampleCampaign, sample)
+	}
+	columnEnvelopeReplayStatus := columnEnvelopeReplay.Status()
 
 	feedCoordinator := feed.NewCoordinator()
 	feedCurrent := *p.Feed.Current
@@ -303,9 +315,21 @@ func (p *Plant) OperationalAudit() map[string]any {
 	incidentResolved := incidentRegistry.Resolve(incident.ID)
 
 	return map[string]any{
-		"analyzer":  map[string]any{"compatible": analyzer.Compatible(analyzerRecovery, analyzerRecovery.Calibration, analyzerRecovery.FeedRevision), "proof": analyzerProofOK, "quality_error": auditError(qualityErr), "quality_proof_error": auditError(qualityProofErr), "last_proof": analyzerClone.LastProof(), "catalog_count": analyzerCatalog.Count(revision)},
-		"campaign":  map[string]any{"phase_error": auditError(phaseErr), "revision_matches": revisionMatches, "can_route": canRoute, "advance_error": auditError(advanceErr), "lease_applied": leaseApplied, "restarted": restarted.Phase, "transitioned": transitioned.Phase, "completed": completed.Phase, "start_error": auditError(campaignStartErr), "running_error": auditError(campaignRunningErr), "history_present": historyPresent, "history_latest": historyLatest, "history_for_revision": len(historyForRevision), "history_phases": historyPhases},
-		"column":    map[string]any{"apply_error": auditError(columnApplyErr), "ready": columnReady, "snapshot_valid": columnSnapshotValid, "stable": columnStable, "heat_permit": columnHeatPermit, "recovery_ready": columnRecoveryReady, "profile_count": p.Profile.Count()},
+		"analyzer": map[string]any{"compatible": analyzer.Compatible(analyzerRecovery, analyzerRecovery.Calibration, analyzerRecovery.FeedRevision), "proof": analyzerProofOK, "quality_error": auditError(qualityErr), "quality_proof_error": auditError(qualityProofErr), "last_proof": analyzerClone.LastProof(), "catalog_count": analyzerCatalog.Count(revision)},
+		"campaign": map[string]any{"phase_error": auditError(phaseErr), "revision_matches": revisionMatches, "can_route": canRoute, "advance_error": auditError(advanceErr), "lease_applied": leaseApplied, "restarted": restarted.Phase, "transitioned": transitioned.Phase, "completed": completed.Phase, "start_error": auditError(campaignStartErr), "running_error": auditError(campaignRunningErr), "history_present": historyPresent, "history_latest": historyLatest, "history_for_revision": len(historyForRevision), "history_phases": historyPhases},
+		"column": map[string]any{"apply_error": auditError(columnApplyErr), "ready": columnReady, "snapshot_valid": columnSnapshotValid, "stable": columnStable, "heat_permit": columnHeatPermit, "recovery_ready": columnRecoveryReady, "profile_count": p.Profile.Count(),
+			"envelope_state":           columnEnvelope.State,
+			"envelope_phase":           columnEnvelope.Phase,
+			"envelope_heat_allowed":    columnHeatAllowed,
+			"envelope_relieve_allowed": columnRelieveAllowed,
+			"envelope_stable_for":      columnEnvelope.StableFor,
+			"envelope_window_needed":   columnEnvelope.WindowNeeded,
+			"envelope_active":          columnEnvelope.Active,
+			"envelope_reasons":         columnEnvelope.Reasons,
+			"envelope_breach":          columnEnvelope.Breach,
+			"envelope_history":         columnEnvelopeHistory,
+			"envelope_replay_state":    columnEnvelopeReplayStatus.State,
+		},
 		"feed":      map[string]any{"switch_error": auditError(feedSwitchErr), "proof_error": auditError(feedProofErr), "proof_safe": feedProof.Safe(), "built_proof_safe": feedBuiltProof.Safe(), "route_isolated": feedCoordinator.Current.Isolated(), "route_event": feedRouteEvent.ID, "open_error": auditError(feedOpenErr), "active": feedActive, "revision": feedStateRevision, "close_error": auditError(feedCloseErr), "metrics": feedMetricSnapshot},
 		"interlock": map[string]any{"explanation": explanation, "sources": evidenceSources, "same_source": sameSource, "heat": heatPermit.Allowed, "route": routePermit, "restored": restoredPermit.Allowed, "recovery_safe": recoverySafe},
 		"journal":   map[string]any{"sequence_error": auditError(sequenceErr), "latest": latestEventPresent, "checkpoint_valid": checkpointValid, "file_path": p.FileLog.Path(), "file_events": len(fileEvents), "file_error": auditError(fileReadErr), "durable_proof": durableProofPresent, "proof_error": auditError(durableProofErr), "recovery_error": auditError(recoveryValidationErr), "recovery_events": len(recoveryEvents), "replay_events": len(replayEvents), "campaign_events": replayedForCampaign, "state_ready": recoveredState.Ready(), "plan_complete": recoveryPlan.Complete(), "generations": len(eventGenerations), "loaded_campaign": loadedSnapshot.Campaign.ID, "load_error": auditError(snapshotLoadErr), "failure_probe_rejected": journalProbeErr != nil},

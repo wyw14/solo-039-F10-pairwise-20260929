@@ -32,6 +32,12 @@ func (s *State) SetFeedRevision(revision uuid.UUID) {
 	s.mu.Unlock()
 }
 
+func (s *State) SetTemperature(temperature float64) {
+	s.mu.Lock()
+	s.value.Temperature = temperature
+	s.mu.Unlock()
+}
+
 func (s *State) Safe() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

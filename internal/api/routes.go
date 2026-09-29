@@ -16,6 +16,8 @@ func (s *Server) routes() {
 	s.router.Post("/api/products/route", s.routeProduct)
 	s.router.Post("/api/reflux/leases", s.lease)
 	s.router.Post("/api/shutdown", s.shutdown)
+	s.router.Post("/api/column/signals", s.columnSignals)
+	s.router.Get("/api/column/envelope", s.envelope)
 	s.router.Get("/api/snapshot", s.snapshot)
 	s.router.Get("/api/evidence", s.evidence)
 	s.router.Get("/api/recovery", s.recovery)
@@ -26,7 +28,15 @@ func (s *Server) routes() {
 func (s *Server) interlocks(w http.ResponseWriter, r *http.Request) {
 	status := s.plant.Status()
 	columnState := status["column"]
-	writeJSON(w, http.StatusOK, map[string]any{"ready": s.plant.Snapshot().Column.Pressure < 2, "column": columnState})
+	envelope := s.plant.ColumnEnvelopeStatus()
+	writeJSON(w, http.StatusOK, map[string]any{
+		// ready 仅在包络处于 normal（全部许可）时为真；
+		// limiting/recovering 下增热被拒但缓解动作仍允许，避免阈值附近许可抖动。
+		"ready":        envelope.State == "normal",
+		"heat_allowed": s.plant.HeatActionAllowed(),
+		"envelope":     envelope,
+		"column":       columnState,
+	})
 }
 
 func (s *Server) incidents(w http.ResponseWriter, r *http.Request) {

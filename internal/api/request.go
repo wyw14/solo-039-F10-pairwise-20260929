@@ -22,6 +22,11 @@ type leaseRequest struct {
 	Owner  string  `json:"owner"`
 	Amount float64 `json:"amount"`
 }
+type columnSignalsRequest struct {
+	Pressure    float64 `json:"pressure"`
+	Level       float64 `json:"level"`
+	Temperature float64 `json:"temperature"`
+}
 
 func decodeJSON(r *http.Request, value any) error {
 	decoder := json.NewDecoder(r.Body)
