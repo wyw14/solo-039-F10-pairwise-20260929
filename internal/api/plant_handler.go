@@ -68,6 +68,28 @@ func (s *Server) lease(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, value)
 }
 
+// ingestSignals accepts the continuous pressure/level measurement stream. The
+// response always carries the de-bounced envelope state, permit and the
+// restrictions (signal + measured history) behind any hold, so an operator can
+// see why a control action is currently withheld.
+func (s *Server) ingestSignals(w http.ResponseWriter, r *http.Request) {
+	var input signalsRequest
+	if err := decodeJSON(r, &input); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	status, err := s.plant.IngestSignals(input.Pressure, input.Level, input.Temperature, input.At)
+	if err != nil {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "envelope": s.plant.EnvelopeStatus()})
+		return
+	}
+	writeJSON(w, http.StatusAccepted, status)
+}
+
+func (s *Server) envelope(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.plant.EnvelopeStatus())
+}
+
 func (s *Server) shutdown(w http.ResponseWriter, r *http.Request) {
 	timeout, err := boolQuery(r, "relief_timeout")
 	if err != nil {

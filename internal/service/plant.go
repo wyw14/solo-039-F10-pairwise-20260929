@@ -8,6 +8,7 @@ import (
 	"github.com/wyw14/solo-039/internal/analyzer"
 	"github.com/wyw14/solo-039/internal/campaign"
 	"github.com/wyw14/solo-039/internal/column"
+	"github.com/wyw14/solo-039/internal/envelope"
 	"github.com/wyw14/solo-039/internal/feed"
 	"github.com/wyw14/solo-039/internal/interlock"
 	"github.com/wyw14/solo-039/internal/journal"
@@ -51,6 +52,7 @@ type Plant struct {
 	ReboilerCommands  *reboiler.CommandBook
 	Evidence          *analyzer.EvidenceCatalog
 	ReliefHistory     *relief.History
+	Envelope          *envelope.Monitor
 	Incidents         *Incidents
 	started           bool
 	lastError         string
@@ -89,6 +91,7 @@ func NewPlant(dataDir string) *Plant {
 		ReboilerCommands:  reboiler.NewCommandBook(),
 		Evidence:          analyzer.NewEvidenceCatalog(),
 		ReliefHistory:     relief.NewHistory(),
+		Envelope:          envelope.NewMonitor(model.DefaultLimits(), envelope.DefaultConfig()),
 		Incidents:         NewIncidents(),
 	}
 	plant.Reflux.Register("T-101", plant.RefluxState)
@@ -132,6 +135,7 @@ func (p *Plant) Start(ctx context.Context, grade, source string) (model.Campaign
 	}
 	p.Campaign.Advance(model.Stabilizing)
 	p.Column.Apply(p.Campaign.Snapshot(), 1.1, 0.5)
+	p.Envelope.Update(model.Stabilizing, 1.1, 0.5, time.Now().Unix()-1)
 	_ = p.Profile.Put(column.TrayReading{Tray: 1, Temperature: 118, Pressure: 1.1})
 	_ = p.Profile.Put(column.TrayReading{Tray: 20, Temperature: 82, Pressure: 0.9})
 	p.ReboilerTelemetry.Record(p.Reboiler.Snapshot())
@@ -209,6 +213,10 @@ func (p *Plant) RouteProduct(target string) error {
 
 func (p *Plant) AcquireReflux(owner string, amount float64) (model.Lease, error) {
 	current := p.Campaign.Snapshot()
+	if _, err := p.requireEnergyPermit("reflux lease"); err != nil {
+		p.Incidents.Open("envelope", err.Error(), current.Revision.String())
+		return model.Lease{}, err
+	}
 	lease, err := p.Reflux.Acquire(owner, amount, current.Fencing)
 	if err != nil {
 		p.Incidents.Open("reflux-capacity", err.Error(), current.Revision.String())
@@ -265,6 +273,7 @@ func (p *Plant) Restore() error {
 	p.mu.Lock()
 	p.started = snapshot.Campaign.Phase != model.Stopped
 	p.mu.Unlock()
+	p.Envelope.Reset(snapshot.Campaign.Phase, snapshot.Column.Pressure, snapshot.Column.Level, time.Now().Unix()-1)
 	if !model.PhaseAllowsHeat(snapshot.Campaign.Phase) {
 		p.Reboiler.Stop()
 	}
@@ -284,7 +293,7 @@ func (p *Plant) Status() map[string]any {
 	lastError := p.lastError
 	p.mu.RUnlock()
 	gradient, _ := p.Profile.Gradient()
-	return map[string]any{"started": started, "last_error": lastError, "campaign": p.Campaign.Snapshot(), "column": p.Column.Snapshot(), "reflux_used": p.Reflux.Used(), "products": p.ProductTargets(), "relief": p.Relief.State.Snapshot(), "feed_metrics": p.FeedMetrics.Snapshot(), "reflux_telemetry": p.RefluxTelemetry.Snapshot(), "reboiler_telemetry": p.ReboilerTelemetry.Snapshot(), "product_decisions": p.ProductAudit.Count(), "utility_used": p.UtilityLedger.Used(), "metrics": p.Metrics.Snapshot(), "campaign_changes": p.CampaignHistory.Count(), "profile_gradient": gradient, "profile_stable": p.Profile.Stable(40), "evidence_count": p.Evidence.Count(p.Campaign.Snapshot().Revision.String()), "relief_attempts": p.ReliefHistory.Count(), "open_incidents": p.Incidents.CountOpen(), "operational_audit": p.OperationalAudit()}
+	return map[string]any{"started": started, "last_error": lastError, "campaign": p.Campaign.Snapshot(), "column": p.Column.Snapshot(), "envelope": p.EnvelopeStatus(), "reflux_used": p.Reflux.Used(), "products": p.ProductTargets(), "relief": p.Relief.State.Snapshot(), "feed_metrics": p.FeedMetrics.Snapshot(), "reflux_telemetry": p.RefluxTelemetry.Snapshot(), "reboiler_telemetry": p.ReboilerTelemetry.Snapshot(), "product_decisions": p.ProductAudit.Count(), "utility_used": p.UtilityLedger.Used(), "metrics": p.Metrics.Snapshot(), "campaign_changes": p.CampaignHistory.Count(), "profile_gradient": gradient, "profile_stable": p.Profile.Stable(40), "evidence_count": p.Evidence.Count(p.Campaign.Snapshot().Revision.String()), "relief_attempts": p.ReliefHistory.Count(), "open_incidents": p.Incidents.CountOpen(), "operational_audit": p.OperationalAudit()}
 }
 
 func (p *Plant) record(kind, payload string) error {

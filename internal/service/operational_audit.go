@@ -5,6 +5,7 @@ import (
 	"github.com/wyw14/solo-039/internal/analyzer"
 	"github.com/wyw14/solo-039/internal/campaign"
 	"github.com/wyw14/solo-039/internal/column"
+	"github.com/wyw14/solo-039/internal/envelope"
 	"github.com/wyw14/solo-039/internal/feed"
 	"github.com/wyw14/solo-039/internal/interlock"
 	"github.com/wyw14/solo-039/internal/journal"
@@ -92,6 +93,21 @@ func (p *Plant) OperationalAudit() map[string]any {
 	columnHeatPermit := column.PermitHeat(columnClone, current)
 	columnRecoveryReady := column.ColumnReady(columnClone.Snapshot())
 
+	// Independent envelope cross-check: classify the live column snapshot
+	// against the envelope that belongs to its current phase and confirm the
+	// running monitor's permit is consistent with that classification.
+	limits := model.DefaultLimits()
+	liveEnvelope := p.Envelope.Status()
+	phaseEnvelope := envelope.EnvelopeFor(limits, current.Phase)
+	pressureBand := phaseEnvelope.Pressure.Classify(snapshot.Column.Pressure)
+	levelBand := phaseEnvelope.Level.Classify(snapshot.Column.Level)
+	energyPermit := p.Envelope.Permit(envelope.ActionEnergy)
+	safePermit := p.Envelope.Permit(envelope.ActionSafe)
+	// A hard-band snapshot must never coincide with an energy release.
+	envelopeConsistent := !(pressureBand == envelope.BandHard || levelBand == envelope.BandHard) || !energyPermit.Allowed
+	// Protective actions must always be releasable regardless of state.
+	safeAlwaysAvailable := safePermit.Allowed
+
 	feedCoordinator := feed.NewCoordinator()
 	feedCurrent := *p.Feed.Current
 	feedPrevious := *p.Feed.Previous
@@ -166,7 +182,6 @@ func (p *Plant) OperationalAudit() map[string]any {
 	acknowledgement := model.Acknowledgement{Command: command.ID, Campaign: command.Campaign, Revision: command.Revision, Epoch: command.Epoch, Equipment: command.Equipment, State: "observed", Value: snapshot.Reboiler.Steam}
 	ackMatches := acknowledgement.Matches(command)
 	ackErr := acknowledgement.Validate(command)
-	limits := model.DefaultLimits()
 	columnLimitErr := limits.ValidateColumn(snapshot.Column)
 	energyLimitErr := limits.ValidateEnergy(snapshot.Reboiler, snapshot.Reflux)
 	limitSafe := limits.Safe(snapshot)
@@ -306,6 +321,7 @@ func (p *Plant) OperationalAudit() map[string]any {
 		"analyzer":  map[string]any{"compatible": analyzer.Compatible(analyzerRecovery, analyzerRecovery.Calibration, analyzerRecovery.FeedRevision), "proof": analyzerProofOK, "quality_error": auditError(qualityErr), "quality_proof_error": auditError(qualityProofErr), "last_proof": analyzerClone.LastProof(), "catalog_count": analyzerCatalog.Count(revision)},
 		"campaign":  map[string]any{"phase_error": auditError(phaseErr), "revision_matches": revisionMatches, "can_route": canRoute, "advance_error": auditError(advanceErr), "lease_applied": leaseApplied, "restarted": restarted.Phase, "transitioned": transitioned.Phase, "completed": completed.Phase, "start_error": auditError(campaignStartErr), "running_error": auditError(campaignRunningErr), "history_present": historyPresent, "history_latest": historyLatest, "history_for_revision": len(historyForRevision), "history_phases": historyPhases},
 		"column":    map[string]any{"apply_error": auditError(columnApplyErr), "ready": columnReady, "snapshot_valid": columnSnapshotValid, "stable": columnStable, "heat_permit": columnHeatPermit, "recovery_ready": columnRecoveryReady, "profile_count": p.Profile.Count()},
+		"envelope":  map[string]any{"state": liveEnvelope.State, "phase": liveEnvelope.Phase, "pressure_band": pressureBand, "level_band": levelBand, "energy_permitted": energyPermit.Allowed, "safe_permitted": safeAlwaysAvailable, "consistent": envelopeConsistent, "restrictions": liveEnvelope.Restrictions, "window": liveEnvelope.Window, "guard_pressure_high": phaseEnvelope.Pressure.GuardHigh, "restore_pressure_high": phaseEnvelope.Pressure.RestoreHigh, "guard_level_high": phaseEnvelope.Level.GuardHigh, "restore_level_high": phaseEnvelope.Level.RestoreHigh},
 		"feed":      map[string]any{"switch_error": auditError(feedSwitchErr), "proof_error": auditError(feedProofErr), "proof_safe": feedProof.Safe(), "built_proof_safe": feedBuiltProof.Safe(), "route_isolated": feedCoordinator.Current.Isolated(), "route_event": feedRouteEvent.ID, "open_error": auditError(feedOpenErr), "active": feedActive, "revision": feedStateRevision, "close_error": auditError(feedCloseErr), "metrics": feedMetricSnapshot},
 		"interlock": map[string]any{"explanation": explanation, "sources": evidenceSources, "same_source": sameSource, "heat": heatPermit.Allowed, "route": routePermit, "restored": restoredPermit.Allowed, "recovery_safe": recoverySafe},
 		"journal":   map[string]any{"sequence_error": auditError(sequenceErr), "latest": latestEventPresent, "checkpoint_valid": checkpointValid, "file_path": p.FileLog.Path(), "file_events": len(fileEvents), "file_error": auditError(fileReadErr), "durable_proof": durableProofPresent, "proof_error": auditError(durableProofErr), "recovery_error": auditError(recoveryValidationErr), "recovery_events": len(recoveryEvents), "replay_events": len(replayEvents), "campaign_events": replayedForCampaign, "state_ready": recoveredState.Ready(), "plan_complete": recoveryPlan.Complete(), "generations": len(eventGenerations), "loaded_campaign": loadedSnapshot.Campaign.ID, "load_error": auditError(snapshotLoadErr), "failure_probe_rejected": journalProbeErr != nil},

@@ -15,6 +15,8 @@ func (s *Server) routes() {
 	s.router.Post("/api/analyzer/calibrate", s.calibrate)
 	s.router.Post("/api/products/route", s.routeProduct)
 	s.router.Post("/api/reflux/leases", s.lease)
+	s.router.Post("/api/column/signals", s.ingestSignals)
+	s.router.Get("/api/envelope", s.envelope)
 	s.router.Post("/api/shutdown", s.shutdown)
 	s.router.Get("/api/snapshot", s.snapshot)
 	s.router.Get("/api/evidence", s.evidence)
@@ -25,8 +27,13 @@ func (s *Server) routes() {
 
 func (s *Server) interlocks(w http.ResponseWriter, r *http.Request) {
 	status := s.plant.Status()
-	columnState := status["column"]
-	writeJSON(w, http.StatusOK, map[string]any{"ready": s.plant.Snapshot().Column.Pressure < 2, "column": columnState})
+	envelopeStatus := s.plant.EnvelopeStatus()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ready":    envelopeStatus.Permit.Allowed,
+		"state":    envelopeStatus.Status.State,
+		"column":   status["column"],
+		"envelope": envelopeStatus,
+	})
 }
 
 func (s *Server) incidents(w http.ResponseWriter, r *http.Request) {
